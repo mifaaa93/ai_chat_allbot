@@ -28,6 +28,8 @@ SYSTEM_BASE = """Ты — умный ассистент в Telegram. Отвеч�
 Длинный код, таблицы, конфиги, PDF и готовые документы отдавай инструментом write_file. Для PDF вызывай write_file с filename вроде hello.pdf и обычным текстом в content.
 Несколько файлов или архив — write_zip: список files с filename и content, бот соберёт zip.
 Картинки по запросу — generate_image. Альбом фото — это один запрос, смотри все кадры.
+Если пользователь отвечает на сообщение, в запросе будет цитата и текст исходного сообщения — правь именно это.
+Если приложено содержимое недавнего файла, правь его через write_file/write_zip с тем же именем, не выдумывай файл заново.
 Актуальные факты из интернета — web_search, затем web_fetch по нужным ссылкам.
 Не выдумывай содержимое страниц. Не упоминай названия инструментов.
 Не пиши дисклеймеры про то, что ты модель. Будь конкретным."""
@@ -40,10 +42,18 @@ STYLE_HINTS = {
 
 
 @dataclass
+class OutFile:
+    filename: str
+    data: bytes
+    source_text: str | None = None
+
+
+@dataclass
 class ChatResult:
     text: str
     images: list[bytes] = field(default_factory=list)
-    files: list[tuple[str, bytes]] = field(default_factory=list)
+    image_prompts: list[str] = field(default_factory=list)
+    files: list[OutFile] = field(default_factory=list)
 
 
 def _status(exc: BaseException) -> int | None:
@@ -142,8 +152,13 @@ class ChatClient:
                     result = execute_tool(name, args, image_quality=image_quality)
                     if result.image:
                         extras.images.append(result.image)
+                        extras.image_prompts.append(result.image_prompt or "")
                     if result.file:
-                        extras.files.append(result.file)
+                        extras.files.append(OutFile(
+                            filename=result.file[0],
+                            data=result.file[1],
+                            source_text=result.source_text,
+                        ))
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call.get("id", name),

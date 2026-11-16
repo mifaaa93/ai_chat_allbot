@@ -9,6 +9,7 @@ from contextlib import closing
 from telebot import types
 from telebot.async_telebot import AsyncTeleBot
 
+from bot.context import attach_context, save_bot_files, save_user_files
 from bot.delivery import deliver_answer, edit_status, send_status
 from bot.media import unit_payload, units_status
 from bot.queue import AlbumGate, ChatWork, combine_user_contents, content_preview
@@ -46,7 +47,7 @@ def _load_user(user_id: int) -> dict:
         return dict(get_or_create_user(conn, user_id))
 
 
-def _complete_sync(user_id: int, content, on_retry=None):
+def _complete_sync(user_id: int, content, on_retry=None, stored: str | None = None):
     with closing(open_db()) as conn:
         settings = dict(get_or_create_user(conn, user_id))
         thread_id = settings["thread_id"]
@@ -60,9 +61,9 @@ def _complete_sync(user_id: int, content, on_retry=None):
         image_quality=settings["image_quality"],
         on_retry=on_retry,
     )
-    stored = content_preview(content)[:12000]
+    preview = (stored if stored is not None else content_preview(content))[:12000]
     with closing(open_db()) as conn:
-        add_message(conn, user_id, thread_id, "user", stored)
+        add_message(conn, user_id, thread_id, "user", preview)
         add_message(conn, user_id, thread_id, "assistant", result.text[:12000])
     return result
 
@@ -106,7 +107,12 @@ async def _run_turn(tg: AsyncTeleBot, units: list[list[types.Message]]) -> None:
     status = await send_status(tg, chat_id, units_status(units), first.message_id)
     try:
         payloads = [await unit_payload(tg, unit, settings["model"]) for unit in units]
-        content = payloads[0] if len(payloads) == 1 else combine_user_contents(payloads)
+        raw = payloads[0] if len(payloads) == 1 else combine_user_contents(payloads)
+        await asyncio.to_thread(save_user_files, user.id, settings["thread_id"], units)
+        content = await attach_context(
+            tg, raw, units, user.id, settings["thread_id"], settings["model"],
+        )
+        stored = content_preview(raw)[:12000]
     except Exception as exc:
         log.warning("payload failed error=%s", exc)
         await edit_status(tg, chat_id, status.message_id, str(exc)[:400])
@@ -123,14 +129,17 @@ async def _run_turn(tg: AsyncTeleBot, units: list[list[types.Message]]) -> None:
         )
 
     try:
-        result = await asyncio.to_thread(_complete_sync, user.id, content, on_retry)
+        result = await asyncio.to_thread(_complete_sync, user.id, content, on_retry, stored)
     except Exception:
         log.exception("chat failed")
         await edit_status(tg, chat_id, status.message_id, "Не получилось ответить. Попробуй ещё раз.")
         return
-    await deliver_answer(
+    records = await deliver_answer(
         tg, chat_id, status.message_id, result.text,
-        images=result.images, files=result.files,
+        images=result.images, image_prompts=result.image_prompts, files=result.files,
+    )
+    await asyncio.to_thread(
+        save_bot_files, user.id, settings["thread_id"], records, status.message_id,
     )
 
 

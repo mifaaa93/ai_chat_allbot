@@ -8,7 +8,7 @@ import uuid
 from contextlib import closing
 from pathlib import Path
 
-from config import CVC_MODEL, DATABASE_PATH, HISTORY_LIMIT, ROOT
+from config import CVC_MODEL, DATABASE_PATH, HISTORY_LIMIT, MAX_STORED_FILES, ROOT, SOURCE_TEXT_LIMIT
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -29,6 +29,20 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(user_id, thread_id, id);
+CREATE TABLE IF NOT EXISTS files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    thread_id TEXT NOT NULL,
+    tg_file_id TEXT NOT NULL,
+    tg_message_id INTEGER,
+    anchor_message_id INTEGER,
+    filename TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    source_text TEXT,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_files_thread ON files(user_id, thread_id, id);
 """
 
 
@@ -85,6 +99,8 @@ def update_user(conn: sqlite3.Connection, user_id: int, **fields) -> sqlite3.Row
 
 
 def new_thread(conn: sqlite3.Connection, user_id: int) -> sqlite3.Row:
+    row = get_or_create_user(conn, user_id)
+    clear_files(conn, user_id, row["thread_id"])
     return update_user(conn, user_id, thread_id=_new_thread())
 
 
@@ -103,3 +119,62 @@ def load_history(conn: sqlite3.Connection, user_id: int, thread_id: str, limit: 
         (user_id, thread_id, limit),
     ).fetchall()
     return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
+
+
+def add_file(
+    conn: sqlite3.Connection,
+    user_id: int,
+    thread_id: str,
+    *,
+    tg_file_id: str,
+    filename: str,
+    kind: str,
+    origin: str,
+    tg_message_id: int | None = None,
+    anchor_message_id: int | None = None,
+    source_text: str | None = None,
+) -> None:
+    text = (source_text or "")[:SOURCE_TEXT_LIMIT] or None
+    conn.execute(
+        "INSERT INTO files (user_id, thread_id, tg_file_id, tg_message_id, anchor_message_id, "
+        "filename, kind, origin, source_text, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            user_id, thread_id, tg_file_id, tg_message_id, anchor_message_id,
+            filename or "file", kind, origin, text, time.time(),
+        ),
+    )
+    conn.commit()
+    _prune_files(conn, user_id, thread_id)
+
+
+def list_files(conn: sqlite3.Connection, user_id: int, thread_id: str, limit: int = MAX_STORED_FILES) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM files WHERE user_id = ? AND thread_id = ? ORDER BY id DESC LIMIT ?",
+        (user_id, thread_id, limit),
+    ).fetchall()
+    return [dict(row) for row in reversed(rows)]
+
+
+def clear_files(conn: sqlite3.Connection, user_id: int, thread_id: str | None = None) -> None:
+    if thread_id:
+        conn.execute("DELETE FROM files WHERE user_id = ? AND thread_id = ?", (user_id, thread_id))
+    else:
+        conn.execute("DELETE FROM files WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+
+def _prune_files(conn: sqlite3.Connection, user_id: int, thread_id: str) -> None:
+    rows = conn.execute(
+        "SELECT id FROM files WHERE user_id = ? AND thread_id = ? ORDER BY id DESC LIMIT ?",
+        (user_id, thread_id, MAX_STORED_FILES),
+    ).fetchall()
+    keep = [row["id"] for row in rows]
+    if not keep:
+        conn.execute("DELETE FROM files WHERE user_id = ? AND thread_id = ?", (user_id, thread_id))
+    else:
+        placeholders = ",".join("?" * len(keep))
+        conn.execute(
+            f"DELETE FROM files WHERE user_id = ? AND thread_id = ? AND id NOT IN ({placeholders})",
+            [user_id, thread_id, *keep],
+        )
+    conn.commit()

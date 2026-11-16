@@ -143,6 +143,23 @@ def _data_url(data: bytes, name: str) -> str:
     return "data:" + mime + ";base64," + base64.b64encode(data).decode("ascii")
 
 
+def bytes_to_content(data: bytes, name: str, model: str, caption: str = ""):
+    suffix = Path(name).suffix.lower()
+    if suffix in TEXT_SUFFIXES:
+        text = data.decode("utf-8", "replace")[:MAX_TEXT_FILE]
+        body = f"Содержимое файла {name}:\n{text}"
+        return caption + "\n\n" + body if caption else body
+    if suffix == ".zip":
+        return zip_to_content(data, name, caption, model)
+    if suffix in IMAGE_SUFFIXES:
+        return _vision_or_text(data, name, caption or f"Файл {name}.", model)
+    if suffix == ".pdf":
+        note = f"Файл {name}: PDF. Правь исходный текст, если он есть в контексте, и пересобери write_file."
+        return caption + "\n\n" + note if caption else note
+    note = f"Файл {name}: вложение {len(data)} байт, этот формат целиком в чат не кладу."
+    return caption + "\n\n" + note if caption else note
+
+
 def zip_to_content(data: bytes, name: str, caption: str, model: str):
     try:
         members = extract_zip(data)

@@ -33,8 +33,10 @@ async def deliver_answer(
     message_id: int,
     text: str,
     images: list[bytes] | None = None,
-    files: list[tuple[str, bytes]] | None = None,
-) -> None:
+    image_prompts: list[str] | None = None,
+    files=None,
+) -> list[dict]:
+    saved: list[dict] = []
     try:
         await tg.edit_message_text(
             None, chat_id, message_id, rich_message=rich_message(text),
@@ -47,9 +49,51 @@ async def deliver_answer(
             await tg.send_message(chat_id, fit(text, PLAIN_LIMIT))
     for index, image in enumerate(images or []):
         photo = BytesIO(image)
-        photo.name = f"image-{index + 1}.png"
-        await tg.send_photo(chat_id, photo)
-    for name, payload in files or []:
+        name = f"image-{index + 1}.png"
+        photo.name = name
+        sent = await tg.send_photo(chat_id, photo)
+        file_id = _photo_file_id(sent)
+        if file_id:
+            prompt = ""
+            if image_prompts and index < len(image_prompts):
+                prompt = image_prompts[index]
+            saved.append({
+                "tg_file_id": file_id,
+                "tg_message_id": sent.message_id,
+                "filename": name,
+                "kind": "photo",
+                "origin": "bot",
+                "source_text": prompt or None,
+            })
+    for item in files or []:
+        name, payload, source = _unpack_file(item)
         document = BytesIO(payload)
         document.name = name
-        await tg.send_document(chat_id, document, visible_file_name=name)
+        sent = await tg.send_document(chat_id, document, visible_file_name=name)
+        file_id = getattr(getattr(sent, "document", None), "file_id", None)
+        if file_id:
+            saved.append({
+                "tg_file_id": file_id,
+                "tg_message_id": sent.message_id,
+                "filename": name,
+                "kind": "document",
+                "origin": "bot",
+                "source_text": source,
+            })
+    return saved
+
+
+def _photo_file_id(sent) -> str | None:
+    photos = getattr(sent, "photo", None) or []
+    if photos:
+        return photos[-1].file_id
+    return None
+
+
+def _unpack_file(item) -> tuple[str, bytes, str | None]:
+    filename = getattr(item, "filename", None)
+    if filename:
+        return filename, item.data, getattr(item, "source_text", None)
+    name, payload = item[0], item[1]
+    source = item[2] if len(item) > 2 else None
+    return name, payload, source

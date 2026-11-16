@@ -22,6 +22,8 @@ class ToolResult:
     text: str
     image: bytes | None = None
     file: tuple[str, bytes] | None = None
+    source_text: str | None = None
+    image_prompt: str | None = None
 
 
 TOOLS = [
@@ -123,7 +125,11 @@ def execute_tool(name: str, args: dict, image_quality: str = "low") -> ToolResul
         if not prompt:
             return ToolResult(text="Пустой prompt.")
         image = generate_image(prompt, quality=image_quality)
-        return ToolResult(text="Изображение сгенерировано и будет отправлено пользователю.", image=image)
+        return ToolResult(
+            text="Изображение сгенерировано и будет отправлено пользователю.",
+            image=image,
+            image_prompt=prompt,
+        )
     if name == "write_file":
         return _write_file(str(args.get("filename") or "file.txt"), str(args.get("content") or ""))
     if name == "write_zip":
@@ -136,7 +142,11 @@ def _write_file(filename: str, content: str) -> ToolResult:
     if encoded.file is None:
         return encoded
     name, _data = encoded.file
-    return ToolResult(text=f"Файл {name} будет отправлен пользователю.", file=encoded.file)
+    return ToolResult(
+        text=f"Файл {name} будет отправлен пользователю.",
+        file=encoded.file,
+        source_text=content,
+    )
 
 
 def _write_zip(args: dict) -> ToolResult:
@@ -150,18 +160,26 @@ def _write_zip(args: dict) -> ToolResult:
     if not isinstance(raw_files, list) or not raw_files:
         return ToolResult(text="Для zip нужен список files.")
     members: list[tuple[str, bytes]] = []
+    listing: list[str] = []
     for item in raw_files:
         if not isinstance(item, dict):
             return ToolResult(text="Каждый файл в zip — объект с filename и content.")
-        encoded = _encode_member(str(item.get("filename") or "file.txt"), str(item.get("content") or ""))
+        member_name = str(item.get("filename") or "file.txt")
+        member_text = str(item.get("content") or "")
+        encoded = _encode_member(member_name, member_text)
         if encoded.file is None:
             return encoded
         members.append(encoded.file)
+        listing.append(f"### {encoded.file[0]}\n{member_text}")
     try:
         archive = build_zip(members, filename)
     except ZipError as exc:
         return ToolResult(text=str(exc))
-    return ToolResult(text=f"Архив {archive[0]} будет отправлен пользователю.", file=archive)
+    return ToolResult(
+        text=f"Архив {archive[0]} будет отправлен пользователю.",
+        file=archive,
+        source_text="\n\n".join(listing),
+    )
 
 
 def _encode_member(filename: str, content: str) -> ToolResult:
