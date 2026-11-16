@@ -1,4 +1,4 @@
-"""CheapVibeCode Telegram chatter."""
+"""Telegram AI chat bot."""
 
 from __future__ import annotations
 

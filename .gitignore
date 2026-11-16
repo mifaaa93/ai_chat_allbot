@@ -7,4 +7,5 @@ venv/
 *.pyo
 .pytest_cache/
 .mypy_cache/
+.playwright-mcp/
 cheapvibecode-login.png

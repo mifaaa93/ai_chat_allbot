@@ -22,7 +22,7 @@ _work = ChatWork()
 _queue_notice: dict[int, int] = {}
 
 START_TEXT = (
-    "Привет. Это ИИ-чат на CheapVibeCode.\n\n"
+    "Привет. Это ИИ-бот.\n\n"
     "Пиши как в ChatGPT: текст, голос, картинки и файлы.\n"
     "/settings — модель, стиль, картинки\n"
     "/new — новый диалог"

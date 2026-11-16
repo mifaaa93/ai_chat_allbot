@@ -1,0 +1,15 @@
+[Unit]
+Description=AI Chat Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ai_chat_allbot
+ExecStart=/opt/ai_chat_allbot/.venv/bin/python main.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
