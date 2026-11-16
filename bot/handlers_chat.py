@@ -10,8 +10,8 @@ from telebot import types
 from telebot.async_telebot import AsyncTeleBot
 
 from bot.delivery import deliver_answer, edit_status, send_status
-from bot.media import batch_status_label, user_payload
-from bot.queue import ChatWork, combine_user_contents, content_preview
+from bot.media import unit_payload, units_status
+from bot.queue import AlbumGate, ChatWork, combine_user_contents, content_preview
 from config import allowed_user_ids
 from db import add_message, get_or_create_user, load_history, open_db
 from llm.client import ChatClient
@@ -19,11 +19,12 @@ from llm.client import ChatClient
 log = logging.getLogger(__name__)
 _client = ChatClient()
 _work = ChatWork()
+_albums = AlbumGate()
 _queue_notice: dict[int, int] = {}
 
 START_TEXT = (
     "Привет. Это ИИ-бот.\n\n"
-    "Пиши как в ChatGPT: текст, голос, картинки и файлы.\n"
+    "Пиши как в ChatGPT: текст, голос, картинки, альбомы и файлы.\n"
     "/settings — модель, стиль, картинки\n"
     "/new — новый диалог"
 )
@@ -35,6 +36,7 @@ def allowed(user_id: int) -> bool:
 
 
 async def clear_chat_queue(chat_id: int) -> None:
+    await _albums.clear_chat(chat_id)
     await _work.clear_pending(chat_id)
     _queue_notice.pop(chat_id, None)
 
@@ -92,8 +94,8 @@ async def _clear_notice(tg: AsyncTeleBot, chat_id: int) -> None:
             pass
 
 
-async def _run_turn(tg: AsyncTeleBot, messages: list[types.Message]) -> None:
-    first = messages[0]
+async def _run_turn(tg: AsyncTeleBot, units: list[list[types.Message]]) -> None:
+    first = units[0][0]
     user = first.from_user
     chat_id = first.chat.id
     settings = await asyncio.to_thread(_load_user, user.id)
@@ -101,12 +103,10 @@ async def _run_turn(tg: AsyncTeleBot, messages: list[types.Message]) -> None:
         await tg.send_chat_action(chat_id, "typing")
     except Exception:
         pass
-    status = await send_status(tg, chat_id, batch_status_label(messages), first.message_id)
+    status = await send_status(tg, chat_id, units_status(units), first.message_id)
     try:
-        payloads = []
-        for item in messages:
-            payloads.append(await user_payload(tg, item, settings["model"]))
-        content = combine_user_contents(payloads)
+        payloads = [await unit_payload(tg, unit, settings["model"]) for unit in units]
+        content = payloads[0] if len(payloads) == 1 else combine_user_contents(payloads)
     except Exception as exc:
         log.warning("payload failed error=%s", exc)
         await edit_status(tg, chat_id, status.message_id, str(exc)[:400])
@@ -144,7 +144,7 @@ def register(tg: AsyncTeleBot) -> None:
 
     @tg.message_handler(
         chat_types=["private"],
-        content_types=["text", "voice", "audio", "photo", "document", "video_note"],
+        content_types=["text", "voice", "audio", "photo", "document", "video", "video_note"],
     )
     async def chat_cmd(message: types.Message) -> None:
         if message.text and message.text.startswith("/"):
@@ -153,10 +153,14 @@ def register(tg: AsyncTeleBot) -> None:
         if user is None or not allowed(user.id):
             return
         log.info(
-            "incoming chat_id=%s user_id=%s content=%s",
+            "incoming chat_id=%s user_id=%s content=%s group=%s",
             message.chat.id, user.id, message.content_type,
+            getattr(message, "media_group_id", None),
         )
-        state = await _work.submit(message.chat.id, message)
+        batch = await _albums.take(message)
+        if not batch:
+            return
+        state = await _work.submit_batch(message.chat.id, batch)
         if state == "queued":
             await _note_queued(tg, message.chat.id)
             return
@@ -167,11 +171,11 @@ def register(tg: AsyncTeleBot) -> None:
             )
             return
         try:
-            batch = [message]
-            while batch:
+            units = [batch]
+            while units:
                 await _clear_notice(tg, message.chat.id)
-                await _run_turn(tg, batch)
-                batch = await _work.finish_or_continue(message.chat.id)
+                await _run_turn(tg, units)
+                units = await _work.finish_or_continue(message.chat.id)
         except Exception:
             log.exception("chat loop failed")
             await _work.abort(message.chat.id)

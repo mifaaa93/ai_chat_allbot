@@ -1,8 +1,8 @@
 import asyncio
 from types import SimpleNamespace
 
-from bot.media import batch_status_label, status_label
-from bot.queue import ChatWork, combine_user_contents, content_preview
+from bot.media import batch_status_label, is_album, status_label
+from bot.queue import AlbumGate, ChatWork, combine_user_contents, content_preview
 
 
 def test_combine_single_passthrough():
@@ -42,11 +42,66 @@ def test_chat_work_queues_while_busy():
         assert await work.pending_count(1) == 2
         assert await work.submit(1, overflow) == "full"
         batch = await work.finish_or_continue(1)
-        assert batch == [extra, extra2]
+        assert batch == [[extra], [extra2]]
         assert await work.finish_or_continue(1) == []
         assert await work.submit(1, first) == "run"
 
     asyncio.run(scenario())
+
+
+def test_submit_batch_queues_album_as_one_unit():
+    work = ChatWork(limit=2)
+
+    async def scenario():
+        first = SimpleNamespace(text="busy")
+        album = [SimpleNamespace(text="p1"), SimpleNamespace(text="p2")]
+        assert await work.submit(1, first) == "run"
+        assert await work.submit_batch(1, album) == "queued"
+        assert await work.pending_count(1) == 1
+        batch = await work.finish_or_continue(1)
+        assert batch == [album]
+
+    asyncio.run(scenario())
+
+
+def _album_msg(group: str, n: int, chat_id: int = 1):
+    return SimpleNamespace(
+        media_group_id=group,
+        chat=SimpleNamespace(id=chat_id),
+        n=n,
+    )
+
+
+def test_album_gate_collects_then_flushes():
+    gate = AlbumGate(delay=0.12)
+
+    async def scenario():
+        first = _album_msg("g1", 1)
+        second = _album_msg("g1", 2)
+        task = asyncio.create_task(gate.take(first))
+        await asyncio.sleep(0.03)
+        assert await gate.take(second) is None
+        batch = await task
+        assert batch == [first, second]
+
+    asyncio.run(scenario())
+
+
+def test_album_gate_plain_message_passthrough():
+    gate = AlbumGate(delay=5)
+    message = SimpleNamespace(media_group_id=None, chat=SimpleNamespace(id=1))
+
+    async def scenario():
+        assert await gate.take(message) == [message]
+
+    asyncio.run(scenario())
+
+
+def test_is_album_same_group():
+    a = _album_msg("g", 1)
+    b = _album_msg("g", 2)
+    assert is_album([a, b])
+    assert not is_album([a, SimpleNamespace(media_group_id=None, chat=SimpleNamespace(id=1))])
 
 
 def test_batch_status_for_several_texts():
