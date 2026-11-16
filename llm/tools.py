@@ -1,0 +1,117 @@
+"""Model tools: web, images, files."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from llm.images import generate_image
+from llm.pdf import render_pdf
+from llm.web import fetch_url, search_web
+
+ALLOWED_FILE_EXT = {
+    ".txt", ".md", ".csv", ".json", ".py", ".html", ".xml", ".yaml", ".yml", ".log", ".pdf",
+}
+MAX_FILE_BYTES = 1_000_000
+
+
+@dataclass
+class ToolResult:
+    text: str
+    image: bytes | None = None
+    file: tuple[str, bytes] | None = None
+
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Поиск в интернете. Верни запрос на языке пользователя.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_fetch",
+            "description": "Скачать страницу по http(s) URL и вернуть текст.",
+            "parameters": {
+                "type": "object",
+                "properties": {"url": {"type": "string"}},
+                "required": ["url"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_image",
+            "description": "Сгенерировать изображение по текстовому описанию.",
+            "parameters": {
+                "type": "object",
+                "properties": {"prompt": {"type": "string"}},
+                "required": ["prompt"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Собрать файл и отдать пользователю в Telegram. Для PDF передай filename с .pdf и обычный текст в content — бот сам соберёт PDF.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["filename", "content"],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
+
+
+def execute_tool(name: str, args: dict, image_quality: str = "low") -> ToolResult:
+    if name == "web_search":
+        return ToolResult(text=search_web(str(args.get("query") or "")))
+    if name == "web_fetch":
+        return ToolResult(text=fetch_url(str(args.get("url") or "")))
+    if name == "generate_image":
+        prompt = str(args.get("prompt") or "").strip()
+        if not prompt:
+            return ToolResult(text="Пустой prompt.")
+        image = generate_image(prompt, quality=image_quality)
+        return ToolResult(text="Изображение сгенерировано и будет отправлено пользователю.", image=image)
+    if name == "write_file":
+        return _write_file(str(args.get("filename") or "file.txt"), str(args.get("content") or ""))
+    return ToolResult(text=f"Неизвестный инструмент {name}.")
+
+
+def _write_file(filename: str, content: str) -> ToolResult:
+    name = filename.replace("\\", "/").split("/")[-1].strip() or "file.txt"
+    if "." not in name:
+        name += ".txt"
+    ext = "." + name.rsplit(".", 1)[-1].lower()
+    if ext not in ALLOWED_FILE_EXT:
+        return ToolResult(text=f"Расширение {ext} нельзя отправить. Используй txt/md/csv/json/py/pdf.")
+    if not content.strip():
+        return ToolResult(text="Пустой файл.")
+    if ext == ".pdf":
+        try:
+            data = render_pdf(content, title=name)
+        except Exception as exc:
+            return ToolResult(text=f"Не собрал PDF: {exc}")
+    else:
+        data = content.encode("utf-8")
+    if len(data) > MAX_FILE_BYTES:
+        return ToolResult(text="Файл больше 1 МБ, укороти содержимое.")
+    return ToolResult(text=f"Файл {name} будет отправлен пользователю.", file=(name, data))

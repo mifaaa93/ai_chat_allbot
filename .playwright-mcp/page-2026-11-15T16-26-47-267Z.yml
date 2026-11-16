@@ -1,0 +1,59 @@
+- generic [active] [ref=f36e1]:
+  - alert [ref=f36e2]
+  - generic [ref=f36e3]:
+    - banner [ref=f36e4]:
+      - generic [ref=f36e5]:
+        - link "cheapvibecode" [ref=f36e6] [cursor=pointer]:
+          - /url: /portal/dashboard
+        - navigation "Portal" [ref=f36e10]:
+          - link "Обзор" [ref=f36e11] [cursor=pointer]:
+            - /url: /portal/dashboard
+          - link "Чат" [ref=f36e15] [cursor=pointer]:
+            - /url: /portal/chat
+          - link "Рефералы" [ref=f36e18] [cursor=pointer]:
+            - /url: /portal/referrals
+          - link "Инструкции" [ref=f36e23] [cursor=pointer]:
+            - /url: /portal/docs
+          - link "Другое" [ref=f36e27] [cursor=pointer]:
+            - /url: /portal/settings
+        - generic [ref=f36e32]:
+          - group "Язык" [ref=f36e33]:
+            - button "RU" [pressed] [ref=f36e34]
+            - button "EN" [ref=f36e35]
+          - 'button "Уведомления: 76 непрочитанных" [ref=f36e36]':
+            - generic [aria-hidden] [ref=f36e37]: "76"
+          - button "Выйти" [ref=f36e38]
+    - main [ref=f36e42]:
+      - region "Чат" [ref=f36e46]:
+        - complementary "Ваши чаты" [ref=f36e47]:
+          - generic [ref=f36e48]:
+            - button "Новый чат" [ref=f36e49]
+            - button "Поиск по чатам" [ref=f36e50]
+            - button "Скрыть список чатов" [expanded] [ref=f36e54]
+          - generic [ref=f36e58]:
+            - generic [ref=f36e59]: Ваши чаты
+            - generic [ref=f36e60]: "1"
+          - generic [ref=f36e62]:
+            - button "Связь" [ref=f36e63]
+            - button "Удалить" [ref=f36e66]
+          - button "Персонализация" [ref=f36e71]
+        - generic [ref=f36e75]:
+          - generic [ref=f36e76]:
+            - generic [ref=f36e77]:
+              - generic [ref=f36e78]: Модель
+              - combobox "Модель" [ref=f36e79]:
+                - generic [ref=f36e80]: GPT 5.6 Terra
+              - textbox [aria-hidden] [ref=f36e86]: gpt-5.6-terra
+            - button "Развернуть чат" [ref=f36e88]
+          - generic [ref=f36e89]:
+            - heading "С чего начнём?" [level=1] [ref=f36e90]
+            - generic [ref=f36e93]:
+              - button "Прикрепить файлы" [ref=f36e94]
+              - button "Прикрепить файлы" [ref=f36e95]
+              - textbox "Спросите о чём угодно" [ref=f36e96]
+              - 'button "Глубина ответа: Средний" [ref=f36e98]':
+                - generic [ref=f36e99]: Средний
+              - generic [ref=f36e102]:
+                - button "Голосовой ввод — до 2 минут" [ref=f36e103]
+                - status [ref=f36e104]: Голосовой ввод — до 2 минут
+              - button "Отправить" [disabled]
