@@ -1,5 +1,8 @@
 from unittest.mock import Mock, patch
 
+import requests
+
+from config import STT_TIMEOUT
 from llm.transcribe import Transcriber
 
 
@@ -28,3 +31,20 @@ def test_empty_transcription_is_user_error():
                 assert "Не разобрал" in str(exc)
             else:
                 raise AssertionError("expected RuntimeError")
+
+
+def test_timeout_scales_with_duration():
+    transcriber = Transcriber(api_key="key", base_url="https://example.test/v1")
+    assert transcriber._timeout(None) == STT_TIMEOUT
+    assert transcriber._timeout(113) == max(STT_TIMEOUT, 203)
+
+
+def test_transcription_retries_timeout_then_succeeds():
+    transcriber = Transcriber(api_key="key", base_url="https://example.test/v1")
+    good = Mock()
+    good.status_code = 200
+    good.json.return_value = {"text": "ок"}
+    with patch.object(transcriber, "convert_to_wav", return_value=b"RIFF audio"):
+        with patch("llm.transcribe.requests.post", side_effect=[requests.ReadTimeout(), good]):
+            with patch("llm.transcribe.time.sleep"):
+                assert transcriber.transcribe(b"oga", duration=10) == "ок"

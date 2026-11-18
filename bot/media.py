@@ -88,7 +88,7 @@ async def _voice_text(
         "voice file=%s bytes=%s duration=%ss",
         name, len(data), duration if duration is not None else "?",
     )
-    text = await asyncio.to_thread(_transcriber.transcribe, data, suffix)
+    text = await asyncio.to_thread(_transcriber.transcribe, data, suffix, duration)
     return "Голос: " + text
 
 

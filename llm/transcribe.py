@@ -5,11 +5,12 @@ from __future__ import annotations
 import logging
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import requests
 
-from config import CVC_API_KEY, CVC_BASE_URL, CVC_TRANSCRIBE_MODEL, FFMPEG_BIN, STT_TIMEOUT
+from config import CVC_API_KEY, CVC_BASE_URL, CVC_TRANSCRIBE_MODEL, FFMPEG_BIN, STT_RETRIES, STT_TIMEOUT
 
 log = logging.getLogger(__name__)
 
@@ -56,26 +57,51 @@ class Transcriber:
             raise RuntimeError("Голосовое больше лимита 25 МБ.")
         return data
 
-    def transcribe(self, audio: bytes, suffix: str = ".oga") -> str:
+    def transcribe(self, audio: bytes, suffix: str = ".oga", duration: int | None = None) -> str:
         wav = self.convert_to_wav(audio, suffix)
-        try:
-            response = requests.post(
-                self.base_url + "/audio/transcriptions",
-                headers={"Authorization": "Bearer " + self.api_key},
-                files={"file": ("voice.wav", wav, "audio/wav")},
-                data={"model": self.model, "response_format": "json", "language": "ru"},
-                timeout=STT_TIMEOUT,
-            )
-        except requests.Timeout as exc:
-            log.warning("transcription timeout after %ss: %s", STT_TIMEOUT, type(exc).__name__)
-            raise RuntimeError("Не удалось отправить голос на распознавание.") from exc
-        except requests.RequestException as exc:
-            log.warning("transcription request failed: %s", type(exc).__name__)
-            raise RuntimeError("Не удалось отправить голос на распознавание.") from exc
-        if response.status_code >= 400:
-            log.warning("transcription http %s", response.status_code)
-            raise RuntimeError("Распознавание голоса не удалось. Попробуй ещё раз или напиши текстом.")
-        text = str(response.json().get("text") or "").strip()
-        if not text:
-            raise RuntimeError("Не разобрал голос. Скажи громче или напиши текстом.")
-        return text
+        timeout = self._timeout(duration)
+        attempts = 1 + STT_RETRIES
+        last_error: BaseException | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                response = requests.post(
+                    self.base_url + "/audio/transcriptions",
+                    headers={"Authorization": "Bearer " + self.api_key},
+                    files={"file": ("voice.wav", wav, "audio/wav")},
+                    data={"model": self.model, "response_format": "json", "language": "ru"},
+                    timeout=timeout,
+                )
+            except requests.Timeout as exc:
+                last_error = exc
+                log.warning(
+                    "transcription timeout after %ss attempt=%s/%s duration=%s",
+                    timeout, attempt, attempts, duration,
+                )
+                if attempt < attempts:
+                    time.sleep(min(2 * attempt, 8))
+                    continue
+                raise RuntimeError("Не удалось отправить голос на распознавание.") from exc
+            except requests.RequestException as exc:
+                last_error = exc
+                log.warning("transcription request failed: %s attempt=%s/%s", type(exc).__name__, attempt, attempts)
+                if attempt < attempts:
+                    time.sleep(min(2 * attempt, 8))
+                    continue
+                raise RuntimeError("Не удалось отправить голос на распознавание.") from exc
+            if response.status_code in {429, 500, 502, 503, 504} and attempt < attempts:
+                log.warning("transcription http %s attempt=%s/%s", response.status_code, attempt, attempts)
+                time.sleep(min(2 * attempt, 8))
+                continue
+            if response.status_code >= 400:
+                log.warning("transcription http %s body=%s", response.status_code, (response.text or "")[:300])
+                raise RuntimeError("Распознавание голоса не удалось. Попробуй ещё раз или напиши текстом.")
+            text = str(response.json().get("text") or "").strip()
+            if not text:
+                raise RuntimeError("Не разобрал голос. Скажи громче или напиши текстом.")
+            return text
+        raise RuntimeError("Не удалось отправить голос на распознавание.") from last_error
+
+    def _timeout(self, duration: int | None) -> int:
+        if duration and duration > 0:
+            return max(STT_TIMEOUT, int(duration) + 90)
+        return STT_TIMEOUT
