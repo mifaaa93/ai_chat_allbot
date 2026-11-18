@@ -6,24 +6,26 @@ import logging
 from io import BytesIO
 
 from telebot.apihelper import ApiTelegramException
+from telebot.asyncio_helper import ApiTelegramException as AsyncApiTelegramException
 from telebot.async_telebot import AsyncTeleBot
 
 from bot.rich import PLAIN_LIMIT, fit, rich_message
 
 log = logging.getLogger(__name__)
+TG_ERRORS = (ApiTelegramException, AsyncApiTelegramException)
 
 
 async def send_status(tg: AsyncTeleBot, chat_id: int, text: str, reply_to: int | None = None):
     try:
         return await tg.send_message(chat_id, text, reply_to_message_id=reply_to)
-    except ApiTelegramException:
+    except TG_ERRORS:
         return await tg.send_message(chat_id, text)
 
 
 async def edit_status(tg: AsyncTeleBot, chat_id: int, message_id: int, text: str) -> None:
     try:
         await tg.edit_message_text(text, chat_id, message_id)
-    except ApiTelegramException:
+    except TG_ERRORS:
         log.debug("status edit skipped", exc_info=True)
 
 

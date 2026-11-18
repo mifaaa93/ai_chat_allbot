@@ -104,9 +104,17 @@ async def _clear_notice(tg: AsyncTeleBot, chat_id: int) -> None:
 
 
 async def _heartbeat(tg: AsyncTeleBot, chat_id: int, message_id: int, clock: TurnStatus) -> None:
+    last = ""
     while True:
         await asyncio.sleep(HEARTBEAT_SECONDS)
-        await edit_status(tg, chat_id, message_id, clock.text())
+        text = clock.text()
+        if text == last:
+            continue
+        last = text
+        try:
+            await edit_status(tg, chat_id, message_id, text)
+        except Exception:
+            log.debug("heartbeat edit skipped", exc_info=True)
 
 
 async def _run_turn(tg: AsyncTeleBot, units: list[list[types.Message]]) -> None:
@@ -230,7 +238,7 @@ async def _run_turn(tg: AsyncTeleBot, units: list[list[types.Message]]) -> None:
             return
     finally:
         beat.cancel()
-        with suppress(asyncio.CancelledError):
+        with suppress(asyncio.CancelledError, Exception):
             await beat
 
     leftover_files = [item for item in result.files if id(item) not in sent_files]
