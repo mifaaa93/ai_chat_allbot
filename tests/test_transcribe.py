@@ -16,6 +16,7 @@ def test_transcription_posts_wav_and_model():
             assert transcriber.transcribe(b"oga") == "привет"
     assert request.call_args.args[0].endswith("/audio/transcriptions")
     assert request.call_args.kwargs["data"]["model"] == "codex-transcribe"
+    assert "language" not in request.call_args.kwargs["data"]
 
 
 def test_empty_transcription_is_user_error():
@@ -64,6 +65,16 @@ def test_transcription_retries_429_capacity_then_succeeds():
             with patch("llm.transcribe.time.sleep") as slept:
                 assert transcriber.transcribe(b"oga") == "привет"
     assert slept.call_args.args[0] == 10.0
+
+
+def test_default_transcriber_uses_groq_when_key_set():
+    with patch("llm.transcribe.GROQ_API_KEY", "gsk_test"):
+        with patch("llm.transcribe.GROQ_BASE_URL", "https://api.groq.com/openai/v1"):
+            with patch("llm.transcribe.GROQ_TRANSCRIBE_MODEL", "whisper-large-v3-turbo"):
+                transcriber = Transcriber()
+    assert transcriber.provider == "groq"
+    assert transcriber.model == "whisper-large-v3-turbo"
+    assert transcriber.base_url.endswith("/openai/v1")
 
 
 def test_stt_retry_wait_honors_retry_after_with_floor():

@@ -1,4 +1,4 @@
-"""Telegram voice to text via CheapVibeCode transcriptions."""
+"""Telegram voice to text via Groq Whisper, with CheapVibeCode as fallback."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import requests
 
 from config import (
     CVC_API_KEY, CVC_BASE_URL, CVC_TRANSCRIBE_MODEL, FFMPEG_BIN,
+    GROQ_API_KEY, GROQ_BASE_URL, GROQ_TRANSCRIBE_MODEL,
     STT_RATE_LIMIT_ATTEMPTS, STT_RETRIES, STT_TIMEOUT,
 )
 
@@ -20,9 +21,16 @@ log = logging.getLogger(__name__)
 
 class Transcriber:
     def __init__(self, api_key: str | None = None, base_url: str | None = None, model: str | None = None):
-        self.api_key = api_key or CVC_API_KEY
-        self.base_url = (base_url or CVC_BASE_URL).rstrip("/")
-        self.model = model or CVC_TRANSCRIBE_MODEL
+        if api_key is None and GROQ_API_KEY:
+            self.provider = "groq"
+            self.api_key = GROQ_API_KEY
+            self.base_url = (base_url or GROQ_BASE_URL).rstrip("/")
+            self.model = model or GROQ_TRANSCRIBE_MODEL
+        else:
+            self.provider = "cvc"
+            self.api_key = api_key or CVC_API_KEY
+            self.base_url = (base_url or CVC_BASE_URL).rstrip("/")
+            self.model = model or CVC_TRANSCRIBE_MODEL
         self.ffmpeg_bin = FFMPEG_BIN
         if self.ffmpeg_bin == "ffmpeg":
             try:
@@ -75,7 +83,7 @@ class Transcriber:
                     self.base_url + "/audio/transcriptions",
                     headers={"Authorization": "Bearer " + self.api_key},
                     files={"file": ("voice.wav", wav, "audio/wav")},
-                    data={"model": self.model, "response_format": "json", "language": "ru"},
+                    data={"model": self.model, "response_format": "verbose_json"},
                     timeout=timeout,
                 )
             except requests.Timeout as exc:
@@ -120,11 +128,13 @@ class Transcriber:
                     response.status_code, stt_elapsed, (response.text or "")[:300],
                 )
                 raise RuntimeError("Распознавание голоса не удалось. Попробуй ещё раз или напиши текстом.")
-            text = str(response.json().get("text") or "").strip()
+            payload = response.json()
+            text = str(payload.get("text") or "").strip()
             if not text:
                 raise RuntimeError("Не разобрал голос. Скажи громче или напиши текстом.")
             log.info(
-                "voice stt elapsed=%.2fs total=%.2fs attempt=%s/%s duration=%s chars=%s",
+                "voice stt provider=%s model=%s lang=%s elapsed=%.2fs total=%.2fs attempt=%s/%s duration=%s chars=%s",
+                self.provider, self.model, payload.get("language") or "auto",
                 stt_elapsed, time.monotonic() - started, attempt, max_attempts, duration, len(text),
             )
             return text
