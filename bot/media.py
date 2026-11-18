@@ -76,9 +76,18 @@ async def download_file(tg: AsyncTeleBot, file_id: str) -> tuple[bytes, str]:
     return data, name
 
 
-async def _voice_text(tg: AsyncTeleBot, file_id: str, fallback_suffix: str = ".oga") -> str:
+async def _voice_text(
+    tg: AsyncTeleBot,
+    file_id: str,
+    fallback_suffix: str = ".oga",
+    duration: int | None = None,
+) -> str:
     data, name = await download_file(tg, file_id)
     suffix = Path(name).suffix or fallback_suffix
+    log.info(
+        "voice file=%s bytes=%s duration=%ss",
+        name, len(data), duration if duration is not None else "?",
+    )
     text = await asyncio.to_thread(_transcriber.transcribe, data, suffix)
     return "Голос: " + text
 
@@ -90,7 +99,8 @@ async def user_payload(tg: AsyncTeleBot, message: types.Message, model: str) -> 
         raise RuntimeError("Видео пока не смотрю. Пришли фото, голос или файл.")
     if message.voice or message.audio or message.video_note:
         media = message.voice or message.audio or message.video_note
-        note = await _voice_text(tg, media.file_id)
+        duration = getattr(media, "duration", None)
+        note = await _voice_text(tg, media.file_id, duration=duration)
         return note if not caption else f"{caption}\n\n{note}"
     if message.photo:
         photo = message.photo[-1]

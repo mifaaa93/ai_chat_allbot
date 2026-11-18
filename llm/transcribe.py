@@ -66,6 +66,9 @@ class Transcriber:
                 data={"model": self.model, "response_format": "json", "language": "ru"},
                 timeout=STT_TIMEOUT,
             )
+        except requests.Timeout as exc:
+            log.warning("transcription timeout after %ss: %s", STT_TIMEOUT, type(exc).__name__)
+            raise RuntimeError("Не удалось отправить голос на распознавание.") from exc
         except requests.RequestException as exc:
             log.warning("transcription request failed: %s", type(exc).__name__)
             raise RuntimeError("Не удалось отправить голос на распознавание.") from exc
