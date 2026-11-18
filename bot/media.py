@@ -27,7 +27,9 @@ _transcriber = Transcriber()
 
 
 def status_label(message: types.Message) -> str:
-    if message.voice or message.audio or message.video_note:
+    if message.video_note:
+        return "Слушаю кружок…"
+    if message.voice or message.audio:
         return "Слушаю голос…"
     if message.photo:
         return "Смотрю картинку…"
@@ -81,31 +83,42 @@ async def _voice_text(
     file_id: str,
     fallback_suffix: str = ".oga",
     duration: int | None = None,
+    extract_audio: bool = False,
 ) -> str:
     started = asyncio.get_running_loop().time()
     data, name = await download_file(tg, file_id)
     suffix = Path(name).suffix or fallback_suffix
     log.info(
-        "voice download elapsed=%.2fs file=%s bytes=%s duration=%ss",
+        "voice download elapsed=%.2fs file=%s bytes=%s duration=%ss extract=%s",
         asyncio.get_running_loop().time() - started,
-        name, len(data), duration if duration is not None else "?",
+        name, len(data), duration if duration is not None else "?", extract_audio,
     )
+    if extract_audio:
+        data, suffix = await asyncio.to_thread(_transcriber.extract_audio, data, suffix)
     text = await asyncio.to_thread(_transcriber.transcribe, data, suffix, duration)
     log.info(
-        "voice pipeline elapsed=%.2fs duration=%ss",
+        "voice pipeline elapsed=%.2fs duration=%ss extract=%s",
         asyncio.get_running_loop().time() - started,
-        duration if duration is not None else "?",
+        duration if duration is not None else "?", extract_audio,
     )
-    return "Голос: " + text
+    prefix = "Кружок: " if extract_audio else "Голос: "
+    return prefix + text
 
 
 async def user_payload(tg: AsyncTeleBot, message: types.Message, model: str) -> object:
     """Return content for the chat API."""
     caption = (message.caption or message.text or "").strip()
     if getattr(message, "video", None):
-        raise RuntimeError("Видео пока не смотрю. Пришли фото, голос или файл.")
-    if message.voice or message.audio or message.video_note:
-        media = message.voice or message.audio or message.video_note
+        raise RuntimeError("Видео пока не смотрю. Пришли фото, голос, кружок или файл.")
+    if message.video_note:
+        duration = getattr(message.video_note, "duration", None)
+        note = await _voice_text(
+            tg, message.video_note.file_id, fallback_suffix=".mp4",
+            duration=duration, extract_audio=True,
+        )
+        return note if not caption else f"{caption}\n\n{note}"
+    if message.voice or message.audio:
+        media = message.voice or message.audio
         duration = getattr(media, "duration", None)
         note = await _voice_text(tg, media.file_id, duration=duration)
         return note if not caption else f"{caption}\n\n{note}"
@@ -256,7 +269,14 @@ async def album_payload(tg: AsyncTeleBot, messages: list[types.Message], model: 
             else:
                 notes.append(f"Вложение {filename} пропустил.")
             continue
-        if video or message.video_note:
+        if message.video_note:
+            duration = getattr(message.video_note, "duration", None)
+            texts.append(await _voice_text(
+                tg, message.video_note.file_id, fallback_suffix=".mp4",
+                duration=duration, extract_audio=True,
+            ))
+            continue
+        if video:
             notes.append("Видео в альбоме пропускаю.")
             continue
         text = (message.text or "").strip()

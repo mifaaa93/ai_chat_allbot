@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import requests
@@ -99,6 +100,23 @@ def test_default_transcriber_uses_groq_when_key_set():
     assert transcriber.provider == "groq"
     assert transcriber.model == "whisper-large-v3-turbo"
     assert transcriber.base_url.endswith("/openai/v1")
+
+
+def test_extract_audio_makes_ogg_without_video():
+    transcriber = Transcriber(api_key="key", base_url="https://example.test/v1")
+
+    def fake_run(cmd, **kwargs):
+        Path(cmd[-1]).write_bytes(b"OggSaudio")
+        return Mock(returncode=0)
+
+    with patch("llm.transcribe.subprocess.run", side_effect=fake_run) as run:
+        data, suffix = transcriber.extract_audio(b"fake-mp4", ".mp4")
+    assert suffix == ".ogg"
+    assert data == b"OggSaudio"
+    command = run.call_args.args[0]
+    assert "-vn" in command
+    assert "libopus" in command
+    assert "0:a:0" in command
 
 
 def test_stt_retry_wait_honors_retry_after_with_floor():

@@ -84,6 +84,47 @@ class Transcriber:
         log.info("voice ffmpeg elapsed=%.2fs wav_bytes=%s", time.monotonic() - started, len(data))
         return data
 
+    def extract_audio(self, media: bytes, suffix: str = ".mp4") -> tuple[bytes, str]:
+        started = time.monotonic()
+        suffix = (suffix or ".mp4").lower()
+        if not suffix.startswith("."):
+            suffix = "." + suffix
+        if suffix not in {".mp4", ".mpeg", ".mov", ".webm", ".mkv", ".3gp", ".avi"}:
+            suffix = ".mp4"
+        with tempfile.TemporaryDirectory(prefix="tg-circle-") as folder:
+            source = Path(folder) / f"input{suffix}"
+            target = Path(folder) / "audio.ogg"
+            source.write_bytes(media)
+            try:
+                subprocess.run(
+                    [
+                        self.ffmpeg_bin, "-hide_banner", "-loglevel", "error",
+                        "-y", "-i", str(source),
+                        "-vn", "-map", "0:a:0",
+                        "-c:a", "libopus", "-ar", "48000", "-ac", "1", "-b:a", "24k",
+                        str(target),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    timeout=120,
+                )
+            except FileNotFoundError as exc:
+                raise RuntimeError("ffmpeg не найден.") from exc
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError("Не удалось вытащить звук из кружка.") from exc
+            except subprocess.CalledProcessError as exc:
+                raise RuntimeError("В кружке нет звука или формат не читается.") from exc
+            data = target.read_bytes()
+        if not data:
+            raise RuntimeError("В кружке нет звука.")
+        if len(data) > MAX_STT_BYTES:
+            raise RuntimeError("Голосовое больше лимита 25 МБ.")
+        log.info(
+            "voice extract elapsed=%.2fs in_bytes=%s out_bytes=%s",
+            time.monotonic() - started, len(media), len(data),
+        )
+        return data, ".ogg"
+
     def prepare_upload(self, audio: bytes, suffix: str = ".oga") -> tuple[bytes, str, str]:
         suffix = (suffix or ".oga").lower()
         if not suffix.startswith("."):
