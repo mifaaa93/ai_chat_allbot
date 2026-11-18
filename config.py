@@ -28,6 +28,7 @@ HISTORY_LIMIT = 24
 CHAT_TIMEOUT = 120
 STT_TIMEOUT = max(30, int(os.getenv("STT_TIMEOUT", "180")))
 STT_RETRIES = max(0, int(os.getenv("STT_RETRIES", "1")))
+STT_RATE_LIMIT_ATTEMPTS = max(1, int(os.getenv("STT_RATE_LIMIT_ATTEMPTS", "5")))
 IMAGE_TIMEOUT = 180
 WEB_TIMEOUT = 20
 MAX_PENDING_PER_CHAT = max(1, int(os.getenv("MAX_PENDING_PER_CHAT", "8")))

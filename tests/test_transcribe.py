@@ -48,3 +48,19 @@ def test_transcription_retries_timeout_then_succeeds():
         with patch("llm.transcribe.requests.post", side_effect=[requests.ReadTimeout(), good]):
             with patch("llm.transcribe.time.sleep"):
                 assert transcriber.transcribe(b"oga", duration=10) == "ок"
+
+
+def test_transcription_retries_429_capacity_then_succeeds():
+    transcriber = Transcriber(api_key="key", base_url="https://example.test/v1")
+    busy = Mock()
+    busy.status_code = 429
+    busy.headers = {}
+    busy.text = '{"error":{"code":"transcription_capacity_exceeded"}}'
+    good = Mock()
+    good.status_code = 200
+    good.json.return_value = {"text": "привет"}
+    with patch.object(transcriber, "convert_to_wav", return_value=b"RIFF audio"):
+        with patch("llm.transcribe.requests.post", side_effect=[busy, good]):
+            with patch("llm.transcribe.time.sleep") as slept:
+                assert transcriber.transcribe(b"oga") == "привет"
+    assert slept.call_args.args[0] == 10.0

@@ -10,7 +10,10 @@ from pathlib import Path
 
 import requests
 
-from config import CVC_API_KEY, CVC_BASE_URL, CVC_TRANSCRIBE_MODEL, FFMPEG_BIN, STT_RETRIES, STT_TIMEOUT
+from config import (
+    CVC_API_KEY, CVC_BASE_URL, CVC_TRANSCRIBE_MODEL, FFMPEG_BIN,
+    STT_RATE_LIMIT_ATTEMPTS, STT_RETRIES, STT_TIMEOUT,
+)
 
 log = logging.getLogger(__name__)
 
@@ -63,9 +66,9 @@ class Transcriber:
         started = time.monotonic()
         wav = self.convert_to_wav(audio, suffix)
         timeout = self._timeout(duration)
-        attempts = 1 + STT_RETRIES
+        max_attempts = 1 + max(STT_RETRIES, STT_RATE_LIMIT_ATTEMPTS)
         last_error: BaseException | None = None
-        for attempt in range(1, attempts + 1):
+        for attempt in range(1, max_attempts + 1):
             stt_started = time.monotonic()
             try:
                 response = requests.post(
@@ -79,9 +82,9 @@ class Transcriber:
                 last_error = exc
                 log.warning(
                     "voice stt timeout elapsed=%.2fs limit=%ss attempt=%s/%s duration=%s",
-                    time.monotonic() - stt_started, timeout, attempt, attempts, duration,
+                    time.monotonic() - stt_started, timeout, attempt, max_attempts, duration,
                 )
-                if attempt < attempts:
+                if attempt <= STT_RETRIES:
                     time.sleep(min(2 * attempt, 8))
                     continue
                 raise RuntimeError("Не удалось отправить голос на распознавание.") from exc
@@ -89,20 +92,28 @@ class Transcriber:
                 last_error = exc
                 log.warning(
                     "voice stt failed elapsed=%.2fs error=%s attempt=%s/%s",
-                    time.monotonic() - stt_started, type(exc).__name__, attempt, attempts,
+                    time.monotonic() - stt_started, type(exc).__name__, attempt, max_attempts,
                 )
-                if attempt < attempts:
+                if attempt <= STT_RETRIES:
                     time.sleep(min(2 * attempt, 8))
                     continue
                 raise RuntimeError("Не удалось отправить голос на распознавание.") from exc
             stt_elapsed = time.monotonic() - stt_started
-            if response.status_code in {429, 500, 502, 503, 504} and attempt < attempts:
+            if response.status_code in {429, 500, 502, 503, 504}:
+                wait = _stt_retry_wait(response, attempt)
+                budget = STT_RATE_LIMIT_ATTEMPTS if response.status_code == 429 else STT_RETRIES
                 log.warning(
-                    "voice stt http %s elapsed=%.2fs attempt=%s/%s",
-                    response.status_code, stt_elapsed, attempt, attempts,
+                    "voice stt http %s elapsed=%.2fs wait=%.1fs attempt=%s/%s body=%s",
+                    response.status_code, stt_elapsed, wait, attempt, max_attempts,
+                    (response.text or "")[:200],
                 )
-                time.sleep(min(2 * attempt, 8))
-                continue
+                if attempt <= budget:
+                    time.sleep(wait)
+                    continue
+                if response.status_code == 429:
+                    raise RuntimeError(
+                        "Распознавание сейчас перегружено у провайдера. Подожди минуту и пришли голос ещё раз."
+                    )
             if response.status_code >= 400:
                 log.warning(
                     "voice stt http %s elapsed=%.2fs body=%s",
@@ -114,7 +125,7 @@ class Transcriber:
                 raise RuntimeError("Не разобрал голос. Скажи громче или напиши текстом.")
             log.info(
                 "voice stt elapsed=%.2fs total=%.2fs attempt=%s/%s duration=%s chars=%s",
-                stt_elapsed, time.monotonic() - started, attempt, attempts, duration, len(text),
+                stt_elapsed, time.monotonic() - started, attempt, max_attempts, duration, len(text),
             )
             return text
         raise RuntimeError("Не удалось отправить голос на распознавание.") from last_error
@@ -123,3 +134,16 @@ class Transcriber:
         if duration and duration > 0:
             return max(STT_TIMEOUT, int(duration) + 90)
         return STT_TIMEOUT
+
+
+def _stt_retry_wait(response, attempt: int) -> float:
+    headers = getattr(response, "headers", None) or {}
+    raw = headers.get("Retry-After") or headers.get("retry-after")
+    if raw is not None:
+        try:
+            return min(max(float(raw), 5.0), 60.0)
+        except (TypeError, ValueError):
+            pass
+    if getattr(response, "status_code", None) == 429:
+        return min(10.0 * (2 ** (attempt - 1)), 60.0)
+    return min(2.0 * attempt, 8.0)
