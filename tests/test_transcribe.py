@@ -3,7 +3,7 @@ from unittest.mock import Mock, patch
 import requests
 
 from config import STT_TIMEOUT
-from llm.transcribe import Transcriber
+from llm.transcribe import Transcriber, groq_upload_name
 
 
 def test_transcription_posts_wav_and_model():
@@ -16,6 +16,8 @@ def test_transcription_posts_wav_and_model():
             assert transcriber.transcribe(b"oga") == "привет"
     assert request.call_args.args[0].endswith("/audio/transcriptions")
     assert request.call_args.kwargs["data"]["model"] == "codex-transcribe"
+    assert request.call_args.kwargs["files"]["file"][0] == "voice.wav"
+    assert request.call_args.kwargs["files"]["file"][2] == "audio/wav"
     assert "language" not in request.call_args.kwargs["data"]
 
 
@@ -65,6 +67,28 @@ def test_transcription_retries_429_capacity_then_succeeds():
             with patch("llm.transcribe.time.sleep") as slept:
                 assert transcriber.transcribe(b"oga") == "привет"
     assert slept.call_args.args[0] == 10.0
+
+
+def test_groq_upload_renames_oga_to_ogg():
+    assert groq_upload_name(b"OggSxxxx", ".oga") == ("voice.ogg", "audio/ogg")
+    assert groq_upload_name(b"OggSxxxx", ".ogg") == ("voice.ogg", "audio/ogg")
+    assert groq_upload_name(b"OggSxxxx", ".unknown") == ("voice.ogg", "audio/ogg")
+    assert groq_upload_name(b"not-ogg", ".aac") is None
+
+
+def test_groq_sends_oga_as_ogg_without_ffmpeg():
+    with patch("llm.transcribe.GROQ_API_KEY", "gsk_test"):
+        transcriber = Transcriber()
+    response = Mock()
+    response.status_code = 200
+    response.json.return_value = {"text": "hello", "language": "English"}
+    audio = b"OggS" + b"\x00" * 20
+    with patch.object(transcriber, "convert_to_wav") as convert:
+        with patch("llm.transcribe.requests.post", return_value=response) as request:
+            assert transcriber.transcribe(audio, suffix=".oga") == "hello"
+    convert.assert_not_called()
+    uploaded = request.call_args.kwargs["files"]["file"]
+    assert uploaded == ("voice.ogg", audio, "audio/ogg")
 
 
 def test_default_transcriber_uses_groq_when_key_set():

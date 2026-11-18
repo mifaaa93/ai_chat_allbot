@@ -17,6 +17,20 @@ from config import (
 )
 
 log = logging.getLogger(__name__)
+MAX_STT_BYTES = 25 * 1024 * 1024
+GROQ_UPLOAD = {
+    ".flac": ("voice.flac", "audio/flac"),
+    ".m4a": ("voice.m4a", "audio/mp4"),
+    ".mp3": ("voice.mp3", "audio/mpeg"),
+    ".mp4": ("voice.mp4", "audio/mp4"),
+    ".mpeg": ("voice.mpeg", "audio/mpeg"),
+    ".mpga": ("voice.mpga", "audio/mpeg"),
+    ".oga": ("voice.ogg", "audio/ogg"),
+    ".ogg": ("voice.ogg", "audio/ogg"),
+    ".opus": ("voice.opus", "audio/opus"),
+    ".wav": ("voice.wav", "audio/wav"),
+    ".webm": ("voice.webm", "audio/webm"),
+}
 
 
 class Transcriber:
@@ -65,14 +79,29 @@ class Transcriber:
             except subprocess.CalledProcessError as exc:
                 raise RuntimeError("ffmpeg не смог конвертировать аудио.") from exc
             data = target.read_bytes()
-        if len(data) > 25 * 1024 * 1024:
+        if len(data) > MAX_STT_BYTES:
             raise RuntimeError("Голосовое больше лимита 25 МБ.")
         log.info("voice ffmpeg elapsed=%.2fs wav_bytes=%s", time.monotonic() - started, len(data))
         return data
 
+    def prepare_upload(self, audio: bytes, suffix: str = ".oga") -> tuple[bytes, str, str]:
+        suffix = (suffix or ".oga").lower()
+        if not suffix.startswith("."):
+            suffix = "." + suffix
+        if self.provider == "groq":
+            mapped = groq_upload_name(audio, suffix)
+            if mapped is not None:
+                if len(audio) > MAX_STT_BYTES:
+                    raise RuntimeError("Голосовое больше лимита 25 МБ.")
+                name, mime = mapped
+                log.info("voice upload provider=groq file=%s bytes=%s ffmpeg=skip", name, len(audio))
+                return audio, name, mime
+        wav = self.convert_to_wav(audio, suffix)
+        return wav, "voice.wav", "audio/wav"
+
     def transcribe(self, audio: bytes, suffix: str = ".oga", duration: int | None = None) -> str:
         started = time.monotonic()
-        wav = self.convert_to_wav(audio, suffix)
+        payload, filename, mime = self.prepare_upload(audio, suffix)
         timeout = self._timeout(duration)
         max_attempts = 1 + max(STT_RETRIES, STT_RATE_LIMIT_ATTEMPTS)
         last_error: BaseException | None = None
@@ -82,7 +111,7 @@ class Transcriber:
                 response = requests.post(
                     self.base_url + "/audio/transcriptions",
                     headers={"Authorization": "Bearer " + self.api_key},
-                    files={"file": ("voice.wav", wav, "audio/wav")},
+                    files={"file": (filename, payload, mime)},
                     data={"model": self.model, "response_format": "verbose_json"},
                     timeout=timeout,
                 )
@@ -144,6 +173,15 @@ class Transcriber:
         if duration and duration > 0:
             return max(STT_TIMEOUT, int(duration) + 90)
         return STT_TIMEOUT
+
+
+def groq_upload_name(audio: bytes, suffix: str) -> tuple[str, str] | None:
+    mapped = GROQ_UPLOAD.get(suffix)
+    if mapped is not None:
+        return mapped
+    if audio[:4] == b"OggS":
+        return "voice.ogg", "audio/ogg"
+    return None
 
 
 def _stt_retry_wait(response, attempt: int) -> tuple[float, str | None]:
