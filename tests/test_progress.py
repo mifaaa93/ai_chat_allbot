@@ -1,6 +1,5 @@
 from bot.progress import (
     TurnStatus,
-    chat_action_for,
     compose_status,
     format_elapsed,
     retry_label,
@@ -26,9 +25,6 @@ def test_tool_labels():
     assert tool_label("web_search", {"query": "usdt rewards"}) == "Ищу: usdt rewards…"
     assert tool_label("web_fetch", {}) == "Читаю страницу…"
     assert tool_label("generate_image", {}) == "Рисую картинку…"
-    assert chat_action_for("write_file") == "upload_document"
-    assert chat_action_for("generate_image") == "upload_photo"
-    assert chat_action_for("web_search") == "typing"
 
 
 def test_tool_done_and_retry_labels():
@@ -42,8 +38,7 @@ def test_turn_status_elapsed():
     clock = TurnStatus("Думаю…")
     clock.started = clock.started - 20
     assert clock.text() == "Думаю…  ·  20с"
-    clock.set_label("Пишу файл a.md…", "upload_document")
-    assert clock.action == "upload_document"
+    clock.set_label("Пишу файл a.md…")
     assert clock.text().startswith("Пишу файл a.md…")
     clock.set_label("Думаю…", restart=True)
     assert clock.text() == "Думаю…"

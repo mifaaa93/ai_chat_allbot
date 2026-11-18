@@ -19,13 +19,7 @@ from bot.delivery import (
     send_status,
 )
 from bot.media import unit_payload, units_status
-from bot.progress import (
-    TurnStatus,
-    chat_action_for,
-    retry_label,
-    tool_done_label,
-    tool_label,
-)
+from bot.progress import TurnStatus, retry_label, tool_done_label, tool_label
 from bot.queue import AlbumGate, ChatWork, combine_user_contents, content_preview
 from config import HEARTBEAT_SECONDS, allowed_user_ids
 from db import add_message, get_or_create_user, load_history, open_db
@@ -112,10 +106,6 @@ async def _clear_notice(tg: AsyncTeleBot, chat_id: int) -> None:
 async def _heartbeat(tg: AsyncTeleBot, chat_id: int, message_id: int, clock: TurnStatus) -> None:
     while True:
         await asyncio.sleep(HEARTBEAT_SECONDS)
-        try:
-            await tg.send_chat_action(chat_id, clock.action)
-        except Exception:
-            log.debug("heartbeat action skipped", exc_info=True)
         await edit_status(tg, chat_id, message_id, clock.text())
 
 
@@ -124,10 +114,6 @@ async def _run_turn(tg: AsyncTeleBot, units: list[list[types.Message]]) -> None:
     user = first.from_user
     chat_id = first.chat.id
     settings = await asyncio.to_thread(_load_user, user.id)
-    try:
-        await tg.send_chat_action(chat_id, "typing")
-    except Exception:
-        pass
     status = await send_status(tg, chat_id, units_status(units), first.message_id)
     clock = TurnStatus(units_status(units))
     records: list[dict] = []
@@ -140,9 +126,9 @@ async def _run_turn(tg: AsyncTeleBot, units: list[list[types.Message]]) -> None:
         nonlocal image_index
         if event == "thinking":
             if clock.used_tools:
-                clock.set_label("Собираю ответ…", "typing")
+                clock.set_label("Собираю ответ…")
             else:
-                clock.set_label("Думаю…", "typing")
+                clock.set_label("Думаю…")
             await edit_status(tg, chat_id, status.message_id, clock.text())
             return
         if event == "retry":
@@ -153,7 +139,6 @@ async def _run_turn(tg: AsyncTeleBot, units: list[list[types.Message]]) -> None:
                     payload.get("status"),
                     timeout=bool(payload.get("timeout")),
                 ),
-                "typing",
             )
             await edit_status(tg, chat_id, status.message_id, clock.text())
             return
@@ -161,11 +146,7 @@ async def _run_turn(tg: AsyncTeleBot, units: list[list[types.Message]]) -> None:
             name = str(payload.get("name") or "")
             args = payload.get("args") or {}
             clock.used_tools = True
-            clock.set_label(tool_label(name, args), chat_action_for(name))
-            try:
-                await tg.send_chat_action(chat_id, clock.action)
-            except Exception:
-                pass
+            clock.set_label(tool_label(name, args))
             await edit_status(tg, chat_id, status.message_id, clock.text())
             return
         if event != "tool_done":
@@ -200,7 +181,7 @@ async def _run_turn(tg: AsyncTeleBot, units: list[list[types.Message]]) -> None:
                 sent = True
             image_index += 1
         clock.used_tools = True
-        clock.set_label(tool_done_label(name, args, sent=sent), "typing")
+        clock.set_label(tool_done_label(name, args, sent=sent))
         await edit_status(tg, chat_id, status.message_id, clock.text())
 
     def on_progress(event: str, **payload):
@@ -217,7 +198,7 @@ async def _run_turn(tg: AsyncTeleBot, units: list[list[types.Message]]) -> None:
     try:
         try:
             payloads = [await unit_payload(tg, unit, settings["model"]) for unit in units]
-            clock.set_label("Думаю…", "typing", restart=True)
+            clock.set_label("Думаю…", restart=True)
             await edit_status(tg, chat_id, status.message_id, clock.text())
             raw = payloads[0] if len(payloads) == 1 else combine_user_contents(payloads)
             await asyncio.to_thread(save_user_files, user.id, settings["thread_id"], units)

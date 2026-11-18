@@ -72,14 +72,6 @@ def retry_label(attempt: int, budget: int, status: int | None, timeout: bool = F
     return f"Ошибка API, повторяю ({attempt}/{budget})…"
 
 
-def chat_action_for(name: str) -> str:
-    if name in {"write_file", "write_zip"}:
-        return "upload_document"
-    if name == "generate_image":
-        return "upload_photo"
-    return "typing"
-
-
 def _filename(args: dict, fallback: str) -> str:
     name = str(args.get("filename") or "").replace("\\", "/").split("/")[-1].strip()
     return name or fallback
@@ -88,7 +80,6 @@ def _filename(args: dict, fallback: str) -> str:
 class TurnStatus:
     def __init__(self, label: str = "Думаю…"):
         self.label = label
-        self.action = "typing"
         self.started = time.monotonic()
         self.used_tools = False
 
@@ -98,8 +89,7 @@ class TurnStatus:
     def text(self) -> str:
         return compose_status(self.label, self.elapsed())
 
-    def set_label(self, label: str, action: str = "typing", *, restart: bool = False) -> None:
+    def set_label(self, label: str, *, restart: bool = False) -> None:
         self.label = label
-        self.action = action
         if restart:
             self.started = time.monotonic()
