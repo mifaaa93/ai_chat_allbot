@@ -8,20 +8,15 @@ HEARTBEAT_MIN_ELAPSED = 8
 
 
 def format_elapsed(seconds: int) -> str:
-    seconds = max(0, int(seconds))
-    if seconds < 60:
-        return f"{seconds}с"
-    minutes, rest = divmod(seconds, 60)
-    if rest == 0:
-        return f"{minutes}м"
-    return f"{minutes}м {rest}с"
+    return f"{max(0, int(seconds))}с"
 
 
 def compose_status(label: str, elapsed: int, min_elapsed: int = HEARTBEAT_MIN_ELAPSED) -> str:
     text = (label or "Думаю…").strip() or "Думаю…"
     if elapsed < min_elapsed:
         return text
-    return f"{text}  ·  {format_elapsed(elapsed)}"
+    base = text.rstrip("…").rstrip()
+    return f"{base} {format_elapsed(elapsed)}"
 
 
 def tool_label(name: str, args: dict | None = None) -> str:

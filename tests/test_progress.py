@@ -10,13 +10,14 @@ from bot.progress import (
 
 def test_format_elapsed():
     assert format_elapsed(8) == "8с"
-    assert format_elapsed(60) == "1м"
-    assert format_elapsed(80) == "1м 20с"
+    assert format_elapsed(16) == "16с"
+    assert format_elapsed(80) == "80с"
 
 
 def test_compose_status_hides_short_wait():
     assert compose_status("Думаю…", 3) == "Думаю…"
-    assert compose_status("Думаю…", 8) == "Думаю…  ·  8с"
+    assert compose_status("Думаю…", 8) == "Думаю 8с"
+    assert compose_status("Думаю…", 16) == "Думаю 16с"
 
 
 def test_tool_labels():
@@ -37,9 +38,9 @@ def test_tool_done_and_retry_labels():
 def test_turn_status_elapsed():
     clock = TurnStatus("Думаю…")
     clock.started = clock.started - 20
-    assert clock.text() == "Думаю…  ·  20с"
+    assert clock.text() == "Думаю 20с"
     clock.set_label("Пишу файл a.md…")
-    assert clock.text().startswith("Пишу файл a.md…")
+    assert clock.text().startswith("Пишу файл a.md")
     clock.set_label("Думаю…", restart=True)
     assert clock.text() == "Думаю…"
     assert clock.elapsed() < 2
