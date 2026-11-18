@@ -82,13 +82,20 @@ async def _voice_text(
     fallback_suffix: str = ".oga",
     duration: int | None = None,
 ) -> str:
+    started = asyncio.get_running_loop().time()
     data, name = await download_file(tg, file_id)
     suffix = Path(name).suffix or fallback_suffix
     log.info(
-        "voice file=%s bytes=%s duration=%ss",
+        "voice download elapsed=%.2fs file=%s bytes=%s duration=%ss",
+        asyncio.get_running_loop().time() - started,
         name, len(data), duration if duration is not None else "?",
     )
     text = await asyncio.to_thread(_transcriber.transcribe, data, suffix, duration)
+    log.info(
+        "voice pipeline elapsed=%.2fs duration=%ss",
+        asyncio.get_running_loop().time() - started,
+        duration if duration is not None else "?",
+    )
     return "Голос: " + text
 
 

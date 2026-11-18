@@ -30,6 +30,7 @@ class Transcriber:
                 pass
 
     def convert_to_wav(self, audio: bytes, suffix: str = ".oga") -> bytes:
+        started = time.monotonic()
         with tempfile.TemporaryDirectory(prefix="tg-voice-") as folder:
             source = Path(folder) / f"input{suffix}"
             target = Path(folder) / "converted.wav"
@@ -55,14 +56,17 @@ class Transcriber:
             data = target.read_bytes()
         if len(data) > 25 * 1024 * 1024:
             raise RuntimeError("Голосовое больше лимита 25 МБ.")
+        log.info("voice ffmpeg elapsed=%.2fs wav_bytes=%s", time.monotonic() - started, len(data))
         return data
 
     def transcribe(self, audio: bytes, suffix: str = ".oga", duration: int | None = None) -> str:
+        started = time.monotonic()
         wav = self.convert_to_wav(audio, suffix)
         timeout = self._timeout(duration)
         attempts = 1 + STT_RETRIES
         last_error: BaseException | None = None
         for attempt in range(1, attempts + 1):
+            stt_started = time.monotonic()
             try:
                 response = requests.post(
                     self.base_url + "/audio/transcriptions",
@@ -74,8 +78,8 @@ class Transcriber:
             except requests.Timeout as exc:
                 last_error = exc
                 log.warning(
-                    "transcription timeout after %ss attempt=%s/%s duration=%s",
-                    timeout, attempt, attempts, duration,
+                    "voice stt timeout elapsed=%.2fs limit=%ss attempt=%s/%s duration=%s",
+                    time.monotonic() - stt_started, timeout, attempt, attempts, duration,
                 )
                 if attempt < attempts:
                     time.sleep(min(2 * attempt, 8))
@@ -83,21 +87,35 @@ class Transcriber:
                 raise RuntimeError("Не удалось отправить голос на распознавание.") from exc
             except requests.RequestException as exc:
                 last_error = exc
-                log.warning("transcription request failed: %s attempt=%s/%s", type(exc).__name__, attempt, attempts)
+                log.warning(
+                    "voice stt failed elapsed=%.2fs error=%s attempt=%s/%s",
+                    time.monotonic() - stt_started, type(exc).__name__, attempt, attempts,
+                )
                 if attempt < attempts:
                     time.sleep(min(2 * attempt, 8))
                     continue
                 raise RuntimeError("Не удалось отправить голос на распознавание.") from exc
+            stt_elapsed = time.monotonic() - stt_started
             if response.status_code in {429, 500, 502, 503, 504} and attempt < attempts:
-                log.warning("transcription http %s attempt=%s/%s", response.status_code, attempt, attempts)
+                log.warning(
+                    "voice stt http %s elapsed=%.2fs attempt=%s/%s",
+                    response.status_code, stt_elapsed, attempt, attempts,
+                )
                 time.sleep(min(2 * attempt, 8))
                 continue
             if response.status_code >= 400:
-                log.warning("transcription http %s body=%s", response.status_code, (response.text or "")[:300])
+                log.warning(
+                    "voice stt http %s elapsed=%.2fs body=%s",
+                    response.status_code, stt_elapsed, (response.text or "")[:300],
+                )
                 raise RuntimeError("Распознавание голоса не удалось. Попробуй ещё раз или напиши текстом.")
             text = str(response.json().get("text") or "").strip()
             if not text:
                 raise RuntimeError("Не разобрал голос. Скажи громче или напиши текстом.")
+            log.info(
+                "voice stt elapsed=%.2fs total=%.2fs attempt=%s/%s duration=%s chars=%s",
+                stt_elapsed, time.monotonic() - started, attempt, attempts, duration, len(text),
+            )
             return text
         raise RuntimeError("Не удалось отправить голос на распознавание.") from last_error
 
