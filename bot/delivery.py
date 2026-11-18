@@ -48,39 +48,62 @@ async def deliver_answer(
         except Exception:
             await tg.send_message(chat_id, fit(text, PLAIN_LIMIT))
     for index, image in enumerate(images or []):
-        photo = BytesIO(image)
-        name = f"image-{index + 1}.png"
-        photo.name = name
-        sent = await tg.send_photo(chat_id, photo)
-        file_id = _photo_file_id(sent)
-        if file_id:
-            prompt = ""
-            if image_prompts and index < len(image_prompts):
-                prompt = image_prompts[index]
-            saved.append({
-                "tg_file_id": file_id,
-                "tg_message_id": sent.message_id,
-                "filename": name,
-                "kind": "photo",
-                "origin": "bot",
-                "source_text": prompt or None,
-            })
+        prompt = ""
+        if image_prompts and index < len(image_prompts):
+            prompt = image_prompts[index]
+        record = await send_generated_image(
+            tg, chat_id, image, index=index, prompt=prompt,
+        )
+        if record:
+            saved.append(record)
     for item in files or []:
-        name, payload, source = _unpack_file(item)
-        document = BytesIO(payload)
-        document.name = name
-        sent = await tg.send_document(chat_id, document, visible_file_name=name)
-        file_id = getattr(getattr(sent, "document", None), "file_id", None)
-        if file_id:
-            saved.append({
-                "tg_file_id": file_id,
-                "tg_message_id": sent.message_id,
-                "filename": name,
-                "kind": "document",
-                "origin": "bot",
-                "source_text": source,
-            })
+        record = await send_generated_file(tg, chat_id, item)
+        if record:
+            saved.append(record)
     return saved
+
+
+async def send_generated_image(
+    tg: AsyncTeleBot,
+    chat_id: int,
+    image: bytes,
+    *,
+    index: int = 0,
+    prompt: str = "",
+) -> dict | None:
+    photo = BytesIO(image)
+    name = f"image-{index + 1}.png"
+    photo.name = name
+    sent = await tg.send_photo(chat_id, photo)
+    file_id = _photo_file_id(sent)
+    if not file_id:
+        return None
+    return {
+        "tg_file_id": file_id,
+        "tg_message_id": sent.message_id,
+        "filename": name,
+        "kind": "photo",
+        "origin": "bot",
+        "source_text": prompt or None,
+    }
+
+
+async def send_generated_file(tg: AsyncTeleBot, chat_id: int, item) -> dict | None:
+    name, payload, source = _unpack_file(item)
+    document = BytesIO(payload)
+    document.name = name
+    sent = await tg.send_document(chat_id, document, visible_file_name=name)
+    file_id = getattr(getattr(sent, "document", None), "file_id", None)
+    if not file_id:
+        return None
+    return {
+        "tg_file_id": file_id,
+        "tg_message_id": sent.message_id,
+        "filename": name,
+        "kind": "document",
+        "origin": "bot",
+        "source_text": source,
+    }
 
 
 def _photo_file_id(sent) -> str | None:

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 import requests
 
-from config import CHAT_TIMEOUT, CVC_API_KEY, CVC_BASE_URL
+from config import CHAT_TIMEOUT, CHAT_TIMEOUT_RETRIES, CVC_API_KEY, CVC_BASE_URL
 from llm.tools import TOOLS, execute_tool
 from models_catalog import clamp_reasoning, lower_reasoning
 
@@ -102,9 +102,20 @@ def _retry_after_seconds(exc: BaseException) -> float | None:
 
 
 def _retry_budget(exc: BaseException) -> int:
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+        return CHAT_TIMEOUT_RETRIES
     if _status(exc) == 429:
         return RATE_LIMIT_ATTEMPTS
     return RETRY_ATTEMPTS
+
+
+def _emit(callback, event: str, **payload) -> None:
+    if callback is None:
+        return
+    try:
+        callback(event, **payload)
+    except Exception:
+        log.exception("on_progress failed event=%s", event)
 
 
 def build_system(style: str) -> str:
@@ -128,14 +139,20 @@ class ChatClient:
         style: str = "normal",
         image_quality: str = "low",
         on_retry=None,
+        on_progress=None,
     ) -> ChatResult:
         messages = [{"role": "system", "content": build_system(style)}]
         messages.extend(history)
         messages.append({"role": "user", "content": user_message})
         extras = ChatResult(text="")
         for _round in range(MAX_TOOL_ROUNDS):
+            _emit(on_progress, "thinking")
             message = self._request(
-                messages, model=model, reasoning=reasoning, on_retry=on_retry,
+                messages,
+                model=model,
+                reasoning=reasoning,
+                on_retry=on_retry,
+                on_progress=on_progress,
             )
             tool_calls = message.get("tool_calls") or []
             content = (message.get("content") or "").strip()
@@ -149,16 +166,28 @@ class ChatClient:
                     except json.JSONDecodeError:
                         args = {}
                     log.info("Tool %s", name)
+                    _emit(on_progress, "tool", name=name, args=args)
                     result = execute_tool(name, args, image_quality=image_quality)
+                    outfile = None
                     if result.image:
                         extras.images.append(result.image)
                         extras.image_prompts.append(result.image_prompt or "")
                     if result.file:
-                        extras.files.append(OutFile(
+                        outfile = OutFile(
                             filename=result.file[0],
                             data=result.file[1],
                             source_text=result.source_text,
-                        ))
+                        )
+                        extras.files.append(outfile)
+                    _emit(
+                        on_progress,
+                        "tool_done",
+                        name=name,
+                        args=args,
+                        file=outfile,
+                        image=result.image,
+                        image_prompt=result.image_prompt or "",
+                    )
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call.get("id", name),
@@ -170,7 +199,14 @@ class ChatClient:
         extras.text = extras.text or "Слишком много шагов инструментов. Уточни запрос."
         return extras
 
-    def _request(self, messages: list[dict], model: str, reasoning: str, on_retry=None) -> dict:
+    def _request(
+        self,
+        messages: list[dict],
+        model: str,
+        reasoning: str,
+        on_retry=None,
+        on_progress=None,
+    ) -> dict:
         payload = {
             "model": model,
             "messages": messages,
@@ -212,9 +248,22 @@ class ChatClient:
                     log.exception("LLM failed elapsed=%.2fs attempt=%s", time.monotonic() - started, attempt)
                     raise
                 wait = _retry_wait(exc, attempt)
-                log.warning("LLM retry attempt=%s/%s wait=%.1fs status=%s", attempt, budget, wait, _status(exc))
+                status = _status(exc)
+                timeout = isinstance(exc, requests.Timeout)
+                log.warning(
+                    "LLM retry attempt=%s/%s wait=%.1fs status=%s timeout=%s",
+                    attempt, budget, wait, status, timeout,
+                )
+                _emit(
+                    on_progress,
+                    "retry",
+                    attempt=attempt,
+                    budget=budget,
+                    status=status,
+                    timeout=timeout,
+                )
                 if on_retry:
-                    on_retry(attempt, budget, _status(exc))
+                    on_retry(attempt, budget, status)
                 time.sleep(wait)
                 attempt += 1
                 continue

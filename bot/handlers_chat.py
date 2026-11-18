@@ -4,16 +4,30 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import closing
+from contextlib import closing, suppress
 
+import requests
 from telebot import types
 from telebot.async_telebot import AsyncTeleBot
 
 from bot.context import attach_context, save_bot_files, save_user_files
-from bot.delivery import deliver_answer, edit_status, send_status
+from bot.delivery import (
+    deliver_answer,
+    edit_status,
+    send_generated_file,
+    send_generated_image,
+    send_status,
+)
 from bot.media import unit_payload, units_status
+from bot.progress import (
+    TurnStatus,
+    chat_action_for,
+    retry_label,
+    tool_done_label,
+    tool_label,
+)
 from bot.queue import AlbumGate, ChatWork, combine_user_contents, content_preview
-from config import allowed_user_ids
+from config import HEARTBEAT_SECONDS, allowed_user_ids
 from db import add_message, get_or_create_user, load_history, open_db
 from llm.client import ChatClient
 
@@ -47,7 +61,7 @@ def _load_user(user_id: int) -> dict:
         return dict(get_or_create_user(conn, user_id))
 
 
-def _complete_sync(user_id: int, content, on_retry=None, stored: str | None = None):
+def _complete_sync(user_id: int, content, stored: str | None = None, on_progress=None):
     with closing(open_db()) as conn:
         settings = dict(get_or_create_user(conn, user_id))
         thread_id = settings["thread_id"]
@@ -59,7 +73,7 @@ def _complete_sync(user_id: int, content, on_retry=None, stored: str | None = No
         reasoning=settings["reasoning"],
         style=settings["style"],
         image_quality=settings["image_quality"],
-        on_retry=on_retry,
+        on_progress=on_progress,
     )
     preview = (stored if stored is not None else content_preview(content))[:12000]
     with closing(open_db()) as conn:
@@ -95,6 +109,16 @@ async def _clear_notice(tg: AsyncTeleBot, chat_id: int) -> None:
             pass
 
 
+async def _heartbeat(tg: AsyncTeleBot, chat_id: int, message_id: int, clock: TurnStatus) -> None:
+    while True:
+        await asyncio.sleep(HEARTBEAT_SECONDS)
+        try:
+            await tg.send_chat_action(chat_id, clock.action)
+        except Exception:
+            log.debug("heartbeat action skipped", exc_info=True)
+        await edit_status(tg, chat_id, message_id, clock.text())
+
+
 async def _run_turn(tg: AsyncTeleBot, units: list[list[types.Message]]) -> None:
     first = units[0][0]
     user = first.from_user
@@ -105,39 +129,143 @@ async def _run_turn(tg: AsyncTeleBot, units: list[list[types.Message]]) -> None:
     except Exception:
         pass
     status = await send_status(tg, chat_id, units_status(units), first.message_id)
-    try:
-        payloads = [await unit_payload(tg, unit, settings["model"]) for unit in units]
-        raw = payloads[0] if len(payloads) == 1 else combine_user_contents(payloads)
-        await asyncio.to_thread(save_user_files, user.id, settings["thread_id"], units)
-        content = await attach_context(
-            tg, raw, units, user.id, settings["thread_id"], settings["model"],
-        )
-        stored = content_preview(raw)[:12000]
-    except Exception as exc:
-        log.warning("payload failed error=%s", exc)
-        await edit_status(tg, chat_id, status.message_id, str(exc)[:400])
-        return
+    clock = TurnStatus(units_status(units))
+    records: list[dict] = []
+    sent_files: set[int] = set()
+    sent_images: set[int] = set()
+    image_index = 0
     loop = asyncio.get_running_loop()
 
-    def on_retry(attempt, retries, code):
-        asyncio.run_coroutine_threadsafe(
-            edit_status(
-                tg, chat_id, status.message_id,
-                f"Ошибка API, повторяю ({attempt}/{retries})…",
-            ),
-            loop,
-        )
+    async def apply_progress(event: str, payload: dict) -> None:
+        nonlocal image_index
+        if event == "thinking":
+            if clock.used_tools:
+                clock.set_label("Собираю ответ…", "typing")
+            else:
+                clock.action = "typing"
+            await edit_status(tg, chat_id, status.message_id, clock.text())
+            return
+        if event == "retry":
+            clock.set_label(
+                retry_label(
+                    payload.get("attempt") or 1,
+                    payload.get("budget") or 1,
+                    payload.get("status"),
+                    timeout=bool(payload.get("timeout")),
+                ),
+                "typing",
+            )
+            await edit_status(tg, chat_id, status.message_id, clock.text())
+            return
+        if event == "tool":
+            name = str(payload.get("name") or "")
+            args = payload.get("args") or {}
+            clock.used_tools = True
+            clock.set_label(tool_label(name, args), chat_action_for(name))
+            try:
+                await tg.send_chat_action(chat_id, clock.action)
+            except Exception:
+                pass
+            await edit_status(tg, chat_id, status.message_id, clock.text())
+            return
+        if event != "tool_done":
+            return
+        name = str(payload.get("name") or "")
+        args = payload.get("args") or {}
+        outfile = payload.get("file")
+        image = payload.get("image")
+        sent = False
+        if outfile is not None:
+            try:
+                record = await send_generated_file(tg, chat_id, outfile)
+            except Exception:
+                log.exception("early file send failed")
+                record = None
+            if record:
+                records.append(record)
+                sent_files.add(id(outfile))
+                sent = True
+        elif image is not None:
+            try:
+                record = await send_generated_image(
+                    tg, chat_id, image, index=image_index,
+                    prompt=str(payload.get("image_prompt") or ""),
+                )
+            except Exception:
+                log.exception("early image send failed")
+                record = None
+            if record:
+                records.append(record)
+                sent_images.add(id(image))
+                sent = True
+            image_index += 1
+        clock.used_tools = True
+        clock.set_label(tool_done_label(name, args, sent=sent), "typing")
+        await edit_status(tg, chat_id, status.message_id, clock.text())
 
+    def on_progress(event: str, **payload):
+        future = asyncio.run_coroutine_threadsafe(apply_progress(event, payload), loop)
+        if event == "tool_done" and (
+            payload.get("file") is not None or payload.get("image") is not None
+        ):
+            try:
+                future.result(timeout=90)
+            except Exception:
+                log.exception("progress wait failed")
+
+    beat = asyncio.create_task(_heartbeat(tg, chat_id, status.message_id, clock))
     try:
-        result = await asyncio.to_thread(_complete_sync, user.id, content, on_retry, stored)
-    except Exception:
-        log.exception("chat failed")
-        await edit_status(tg, chat_id, status.message_id, "Не получилось ответить. Попробуй ещё раз.")
-        return
-    records = await deliver_answer(
+        try:
+            payloads = [await unit_payload(tg, unit, settings["model"]) for unit in units]
+            raw = payloads[0] if len(payloads) == 1 else combine_user_contents(payloads)
+            await asyncio.to_thread(save_user_files, user.id, settings["thread_id"], units)
+            content = await attach_context(
+                tg, raw, units, user.id, settings["thread_id"], settings["model"],
+            )
+            stored = content_preview(raw)[:12000]
+        except Exception as exc:
+            log.warning("payload failed error=%s", exc)
+            await edit_status(tg, chat_id, status.message_id, str(exc)[:400])
+            return
+        try:
+            result = await asyncio.to_thread(
+                _complete_sync, user.id, content, stored, on_progress,
+            )
+        except requests.Timeout:
+            log.exception("chat timeout")
+            await edit_status(
+                tg, chat_id, status.message_id,
+                "Провайдер не ответил вовремя. Попробуй ещё раз.",
+            )
+            return
+        except Exception:
+            log.exception("chat failed")
+            await edit_status(
+                tg, chat_id, status.message_id,
+                "Не получилось ответить. Попробуй ещё раз.",
+            )
+            return
+    finally:
+        beat.cancel()
+        with suppress(asyncio.CancelledError):
+            await beat
+
+    leftover_files = [item for item in result.files if id(item) not in sent_files]
+    leftover_images = []
+    leftover_prompts = []
+    for index, image in enumerate(result.images):
+        if id(image) in sent_images:
+            continue
+        leftover_images.append(image)
+        prompt = ""
+        if index < len(result.image_prompts):
+            prompt = result.image_prompts[index]
+        leftover_prompts.append(prompt)
+    later = await deliver_answer(
         tg, chat_id, status.message_id, result.text,
-        images=result.images, image_prompts=result.image_prompts, files=result.files,
+        images=leftover_images, image_prompts=leftover_prompts, files=leftover_files,
     )
+    records.extend(later)
     await asyncio.to_thread(
         save_bot_files, user.id, settings["thread_id"], records, status.message_id,
     )
