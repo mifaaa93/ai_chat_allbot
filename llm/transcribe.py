@@ -100,11 +100,11 @@ class Transcriber:
                 raise RuntimeError("Не удалось отправить голос на распознавание.") from exc
             stt_elapsed = time.monotonic() - stt_started
             if response.status_code in {429, 500, 502, 503, 504}:
-                wait = _stt_retry_wait(response, attempt)
+                wait, retry_after = _stt_retry_wait(response, attempt)
                 budget = STT_RATE_LIMIT_ATTEMPTS if response.status_code == 429 else STT_RETRIES
                 log.warning(
-                    "voice stt http %s elapsed=%.2fs wait=%.1fs attempt=%s/%s body=%s",
-                    response.status_code, stt_elapsed, wait, attempt, max_attempts,
+                    "voice stt http %s elapsed=%.2fs retry_after=%s wait=%.1fs attempt=%s/%s body=%s",
+                    response.status_code, stt_elapsed, retry_after, wait, attempt, max_attempts,
                     (response.text or "")[:200],
                 )
                 if attempt <= budget:
@@ -136,14 +136,14 @@ class Transcriber:
         return STT_TIMEOUT
 
 
-def _stt_retry_wait(response, attempt: int) -> float:
+def _stt_retry_wait(response, attempt: int) -> tuple[float, str | None]:
     headers = getattr(response, "headers", None) or {}
     raw = headers.get("Retry-After") or headers.get("retry-after")
     if raw is not None:
         try:
-            return min(max(float(raw), 5.0), 60.0)
+            return min(max(float(raw), 5.0), 60.0), str(raw)
         except (TypeError, ValueError):
             pass
     if getattr(response, "status_code", None) == 429:
-        return min(10.0 * (2 ** (attempt - 1)), 60.0)
-    return min(2.0 * attempt, 8.0)
+        return min(10.0 * (2 ** (attempt - 1)), 60.0), None if raw is None else str(raw)
+    return min(2.0 * attempt, 8.0), None if raw is None else str(raw)
