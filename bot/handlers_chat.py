@@ -142,7 +142,7 @@ async def _run_turn(tg: AsyncTeleBot, units: list[list[types.Message]]) -> None:
             if clock.used_tools:
                 clock.set_label("Собираю ответ…", "typing")
             else:
-                clock.action = "typing"
+                clock.set_label("Думаю…", "typing")
             await edit_status(tg, chat_id, status.message_id, clock.text())
             return
         if event == "retry":
@@ -217,6 +217,8 @@ async def _run_turn(tg: AsyncTeleBot, units: list[list[types.Message]]) -> None:
     try:
         try:
             payloads = [await unit_payload(tg, unit, settings["model"]) for unit in units]
+            clock.set_label("Думаю…", "typing", restart=True)
+            await edit_status(tg, chat_id, status.message_id, clock.text())
             raw = payloads[0] if len(payloads) == 1 else combine_user_contents(payloads)
             await asyncio.to_thread(save_user_files, user.id, settings["thread_id"], units)
             content = await attach_context(

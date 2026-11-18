@@ -45,3 +45,6 @@ def test_turn_status_elapsed():
     clock.set_label("Пишу файл a.md…", "upload_document")
     assert clock.action == "upload_document"
     assert clock.text().startswith("Пишу файл a.md…")
+    clock.set_label("Думаю…", restart=True)
+    assert clock.text() == "Думаю…"
+    assert clock.elapsed() < 2

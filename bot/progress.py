@@ -98,6 +98,8 @@ class TurnStatus:
     def text(self) -> str:
         return compose_status(self.label, self.elapsed())
 
-    def set_label(self, label: str, action: str = "typing") -> None:
+    def set_label(self, label: str, action: str = "typing", *, restart: bool = False) -> None:
         self.label = label
         self.action = action
+        if restart:
+            self.started = time.monotonic()
